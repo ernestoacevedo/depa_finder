@@ -18,6 +18,8 @@ defmodule RentBot.Scraper do
         if off, do: "#{seed}/_Desde_#{off}", else: seed
       end
 
+    uf_rate = RentBot.Currency.uf_rate()
+
     results =
       urls
       |> Task.async_stream(&fetch_list/1, timeout: 30_000, max_concurrency: 4)
@@ -25,6 +27,8 @@ defmodule RentBot.Scraper do
         {:ok, xs} when is_list(xs) -> xs
         _ -> []
       end)
+      |> Enum.map(&convert_currency(&1, uf_rate))
+      |> Enum.map(&RentBot.Normalize.enrich/1)
 
     {:ok, Enum.uniq_by(results, & &1.url)}
   end
@@ -72,7 +76,6 @@ defmodule RentBot.Scraper do
       |> decode_preloaded_polycards()
     end)
     |> Enum.reject(&is_nil/1)
-    |> Enum.map(&RentBot.Normalize.enrich/1)
   end
 
   defp decode_preloaded_polycards(""), do: []
@@ -147,7 +150,6 @@ defmodule RentBot.Scraper do
       end
     end)
     |> Enum.reject(&is_nil/1)
-    |> Enum.map(&RentBot.Normalize.enrich/1)
   end
 
   defp pick_item(el) do
@@ -304,4 +306,33 @@ defmodule RentBot.Scraper do
       true -> "https://" <> trimmed
     end
   end
+
+  defp convert_currency(%{currency: currency} = item, uf_rate) do
+    case normalize_currency(currency) do
+      nil ->
+        item
+
+      normalized when normalized in ["CLF", "UF"] ->
+        price = Map.get(item, :price_clp)
+
+        converted_price =
+          if is_number(price) and is_number(uf_rate) do
+            round(price * uf_rate)
+          else
+            price
+          end
+
+        item
+        |> Map.put(:currency, "CLP")
+        |> Map.put(:price_clp, converted_price)
+
+      _ ->
+        item
+    end
+  end
+
+  defp convert_currency(item, _uf_rate), do: item
+
+  defp normalize_currency(currency) when is_binary(currency), do: String.upcase(currency)
+  defp normalize_currency(_), do: nil
 end
