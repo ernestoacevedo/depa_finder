@@ -17,6 +17,7 @@ defmodule RentBot.MixProject do
     {:jason, "~> 1.4"},
     {:ecto, "~> 3.11"},
     {:ecto_sql, "~> 3.11"},
-    {:ecto_sqlite3, "~> 0.18"}
+    {:ecto_sqlite3, "~> 0.18"},
+    {:dotenv, "~> 3.0"}
   ]
 end

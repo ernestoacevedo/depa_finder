@@ -79,6 +79,10 @@ defmodule RentBot.Scraper do
     case Float.parse(String.replace(v, ",", ".")) do {f,_}->f; _->nil end
   end
   defp parse_date(nil), do: nil
-  defp parse_date(iso), do:
-    case DateTime.from_iso8601(iso) do {:ok,dt,_}->dt; _->nil end
+  defp parse_date(iso) do
+    case DateTime.from_iso8601(iso) do
+      {:ok, dt, _} -> dt
+      _ -> nil
+    end
+  end
 end
