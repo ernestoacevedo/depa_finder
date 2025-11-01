@@ -1,0 +1,8 @@
+/_build
+/deps
+*.sqlite3
+/db
+.env
+ENV
+.erlang.cookie
+.coverage
