@@ -1,0 +1,23 @@
+# Archivos compilados
+_build/
+deps/
+*.beam
+*.ez
+
+# Base de datos local
+*.sqlite3*
+
+# Archivos de entorno
+.env
+
+# Docker
+data/
+
+# OS generated files
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db

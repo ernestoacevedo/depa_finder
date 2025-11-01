@@ -1,0 +1,17 @@
+version: '3.8'
+
+services:
+  rent_bot:
+    build: .
+    container_name: rent_bot
+    restart: unless-stopped
+    environment:
+      - TG_BOT_TOKEN=${TG_BOT_TOKEN}
+      - TG_CHAT_ID=${TG_CHAT_ID}
+    volumes:
+      - ./data:/app/data
+    healthcheck:
+      test: ["CMD", "./bin/rent_bot", "rpc", "1 + 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 3

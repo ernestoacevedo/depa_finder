@@ -82,7 +82,7 @@ defmodule RentBot.Scraper do
 
   defp decode_preloaded_polycards(json) when is_binary(json) do
     with {:ok, data} <- Jason.decode(json),
-         results when is_list(results) <- get_in(data, ["pageState", "initialState", "results"]) do
+        results when is_list(results) <- get_in(data, ["pageState", "initialState", "results"]) do
       results |> Enum.flat_map(&polycard_block_items/1)
     else
       _ -> []
@@ -121,7 +121,7 @@ defmodule RentBot.Scraper do
     price_value = Map.get(price_info, "value")
 
     with url when is_binary(url) <- url,
-         title when is_binary(title) <- title do
+        title when is_binary(title) <- title do
       %{
         source: "portalinmobiliario",
         url: url,
