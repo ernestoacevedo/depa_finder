@@ -10,6 +10,9 @@ defmodule RentBot.Store do
       |> Enum.map(&insert!/1)
     {:ok, new}
   end
+  defp exists?(%{fingerprint: fp, url: url}) do
+    from(l in Listing, where: l.fingerprint == ^fp or l.url == ^url) |> Repo.exists?()
+  end
   defp exists?(%{fingerprint: fp}) do
     from(l in Listing, where: l.fingerprint == ^fp) |> Repo.exists?()
   end
