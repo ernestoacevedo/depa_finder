@@ -14,10 +14,10 @@ bot_token =
   System.get_env("TG_BOT_TOKEN") ||
     raise """
     Environment variable TG_BOT_TOKEN is required.
-    
+
     For development: Create a .env file in the project root with:
     TG_BOT_TOKEN=your_token_here
-    
+
     For production: Set the environment variable in your deployment system.
     """
 
@@ -25,10 +25,10 @@ chat_id =
   System.get_env("TG_CHAT_ID") ||
     raise """
     Environment variable TG_CHAT_ID is required.
-    
+
     For development: Create a .env file in the project root with:
     TG_CHAT_ID=your_chat_id_here
-    
+
     For production: Set the environment variable in your deployment system.
     """
 

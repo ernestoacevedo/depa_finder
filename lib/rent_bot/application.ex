@@ -2,7 +2,7 @@ defmodule RentBot.Application do
   use Application
   def start(_t, _a) do
     # Obtener intervalo de configuración o usar default
-    interval_ms = 
+    interval_ms =
       Application.get_env(:rent_bot, :scheduler, [])
       |> Keyword.get(:interval_ms, 10 * 60_000)
 

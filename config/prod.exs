@@ -11,7 +11,7 @@ config :rent_bot, RentBot.Repo,
 
 # Configurar scheduler para producción (cada 10 minutos)
 # Se puede sobrescribir con variable de entorno SCRAPE_INTERVAL_MINUTES
-interval_minutes = 
+interval_minutes =
   case System.get_env("SCRAPE_INTERVAL_MINUTES") do
     nil -> 10
     val -> String.to_integer(val)
