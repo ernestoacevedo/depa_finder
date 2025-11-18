@@ -1,0 +1,37 @@
+{
+  "name": "depa-finder",
+  "private": true,
+  "workspaces": [
+    "apps/*"
+  ],
+  "scripts": {
+    "setup": "cd apps/web && pnpm install",
+    "setup:npm": "cd apps/web && npm install",
+    "setup:yarn": "cd apps/web && yarn install",
+    
+    "dev:api": "cd apps/api && mix phx.server",
+    "dev:web": "cd apps/web && pnpm dev",
+    "dev": "concurrently \"npm run dev:api\" \"npm run dev:web\"",
+    
+    "test:api": "cd apps/api && mix test",
+    "test:web": "cd apps/web && pnpm test",
+    "test": "npm run test:api && npm run test:web",
+    
+    "build:web": "cd apps/web && pnpm build",
+    "build": "npm run build:web",
+    
+    "speckit:fast": "speckit run fast_specs",
+    "speckit:api": "speckit run api_specs", 
+    "speckit:web": "speckit run web_specs",
+    "speckit:full": "speckit run full_specs",
+    "speckit:e2e": "speckit run e2e_specs"
+  },
+  "devDependencies": {
+    "concurrently": "^8.2.0"
+  },
+  "packageManager": "pnpm@8.10.0",
+  "engines": {
+    "node": ">=18.0.0",
+    "pnpm": ">=8.0.0"
+  }
+}

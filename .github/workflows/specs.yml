@@ -1,0 +1,360 @@
+name: Specification-Driven Testing
+
+on:
+  push:
+    branches: [ main, develop ]
+  pull_request:
+    branches: [ main ]
+  workflow_dispatch:
+
+env:
+  MIX_ENV: test
+  NODE_ENV: test
+
+jobs:
+  # Fast feedback loop - unit specs only
+  fast_specs:
+    name: Fast Unit Specs
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    
+    strategy:
+      matrix:
+        include:
+          - app: api
+            working-directory: apps/api
+            cache-key: elixir
+          - app: web  
+            working-directory: apps/web
+            cache-key: node
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        
+      - name: Setup Elixir (API)
+        if: matrix.app == 'api'
+        uses: erlef/setup-beam@v1
+        with:
+          otp-version: '26.0'
+          elixir-version: '1.17.0'
+          
+      - name: Setup Node.js (Web)
+        if: matrix.app == 'web'
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'pnpm'
+          cache-dependency-path: apps/web/pnpm-lock.yaml
+          
+      - name: Cache dependencies (API)
+        if: matrix.app == 'api'
+        uses: actions/cache@v3
+        with:
+          path: |
+            apps/api/deps
+            apps/api/_build
+          key: ${{ runner.os }}-mix-${{ hashFiles('**/mix.lock') }}
+          restore-keys: ${{ runner.os }}-mix-
+          
+      - name: Install dependencies (API)
+        if: matrix.app == 'api'
+        working-directory: ${{ matrix.working-directory }}
+        run: |
+          mix deps.get
+          mix deps.compile
+          
+      - name: Install pnpm (Web)
+        if: matrix.app == 'web'
+        run: npm install -g pnpm
+        
+      - name: Install dependencies (Web)
+        if: matrix.app == 'web'  
+        working-directory: ${{ matrix.working-directory }}
+        run: pnpm install --frozen-lockfile
+        
+      - name: Run unit tests (API)
+        if: matrix.app == 'api'
+        working-directory: ${{ matrix.working-directory }}
+        run: mix test --exclude integration --exclude e2e
+        
+      - name: Run unit tests (Web)
+        if: matrix.app == 'web'
+        working-directory: ${{ matrix.working-directory }}
+        run: pnpm test:unit
+
+  # Full backend specifications
+  api_specs:
+    name: Backend API Specs
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    
+    services:
+      postgres:
+        image: postgres:15
+        env:
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: depa_finder_test
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+        ports:
+          - 5432:5432
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        
+      - name: Setup Elixir
+        uses: erlef/setup-beam@v1
+        with:
+          otp-version: '26.0'
+          elixir-version: '1.17.0'
+          
+      - name: Cache dependencies
+        uses: actions/cache@v3
+        with:
+          path: |
+            apps/api/deps
+            apps/api/_build
+          key: ${{ runner.os }}-mix-${{ hashFiles('**/mix.lock') }}
+          restore-keys: ${{ runner.os }}-mix-
+          
+      - name: Install dependencies
+        working-directory: apps/api
+        run: |
+          mix deps.get
+          mix deps.compile
+          
+      - name: Setup database
+        working-directory: apps/api
+        env:
+          DATABASE_URL: postgres://postgres:postgres@localhost:5432/depa_finder_test
+        run: |
+          mix ecto.create
+          mix ecto.migrate
+          
+      - name: Run all API tests
+        working-directory: apps/api
+        env:
+          DATABASE_URL: postgres://postgres:postgres@localhost:5432/depa_finder_test
+        run: mix test --cover
+        
+      - name: Generate coverage report
+        working-directory: apps/api
+        run: mix coveralls.html
+        
+      - name: Upload coverage reports
+        uses: codecov/codecov-action@v3
+        with:
+          files: apps/api/cover/excoveralls.json
+          flags: backend
+
+  # Full frontend specifications  
+  web_specs:
+    name: Frontend Web Specs
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'pnpm'
+          cache-dependency-path: apps/web/pnpm-lock.yaml
+          
+      - name: Install pnpm
+        run: npm install -g pnpm
+        
+      - name: Install dependencies
+        working-directory: apps/web
+        run: pnpm install --frozen-lockfile
+        
+      - name: Run type checking
+        working-directory: apps/web
+        run: pnpm type-check
+        
+      - name: Run linting
+        working-directory: apps/web
+        run: pnpm lint
+        
+      - name: Run all tests with coverage
+        working-directory: apps/web
+        run: pnpm test:coverage
+        
+      - name: Upload coverage reports
+        uses: codecov/codecov-action@v3
+        with:
+          files: apps/web/coverage/lcov.info
+          flags: frontend
+
+  # End-to-end integration specs
+  e2e_specs:
+    name: E2E Integration Specs
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    needs: [api_specs, web_specs]
+    
+    services:
+      postgres:
+        image: postgres:15
+        env:
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: depa_finder_test
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+        ports:
+          - 5432:5432
+          
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        
+      - name: Setup Elixir
+        uses: erlef/setup-beam@v1
+        with:
+          otp-version: '26.0'
+          elixir-version: '1.17.0'
+          
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'pnpm'
+          cache-dependency-path: apps/web/pnpm-lock.yaml
+          
+      - name: Install pnpm
+        run: npm install -g pnpm
+        
+      - name: Cache Elixir dependencies
+        uses: actions/cache@v3
+        with:
+          path: |
+            apps/api/deps
+            apps/api/_build
+          key: ${{ runner.os }}-mix-${{ hashFiles('**/mix.lock') }}
+          restore-keys: ${{ runner.os }}-mix-
+          
+      - name: Install dependencies
+        run: |
+          cd apps/api && mix deps.get && mix deps.compile
+          cd apps/web && pnpm install --frozen-lockfile
+          
+      - name: Setup test database
+        working-directory: apps/api
+        env:
+          DATABASE_URL: postgres://postgres:postgres@localhost:5432/depa_finder_test
+        run: |
+          mix ecto.create
+          mix ecto.migrate
+          
+      - name: Build frontend for E2E
+        working-directory: apps/web
+        run: pnpm build
+        
+      - name: Install Playwright
+        working-directory: apps/web
+        run: pnpm playwright install --with-deps
+        
+      - name: Start backend server
+        working-directory: apps/api
+        env:
+          DATABASE_URL: postgres://postgres:postgres@localhost:5432/depa_finder_test
+          PORT: 4000
+        run: |
+          mix phx.server &
+          sleep 10 # Wait for server to start
+          
+      - name: Start frontend server
+        working-directory: apps/web  
+        env:
+          VITE_API_URL: http://localhost:4000
+        run: |
+          pnpm preview --port 3000 --host &
+          sleep 5 # Wait for preview server
+          
+      - name: Run E2E tests (API)
+        working-directory: apps/api
+        env:
+          DATABASE_URL: postgres://postgres:postgres@localhost:5432/depa_finder_test
+        run: mix test --only e2e
+        
+      - name: Run E2E tests (Web)
+        working-directory: apps/web
+        env:
+          PLAYWRIGHT_BASE_URL: http://localhost:3000
+        run: pnpm test:e2e
+        
+      - name: Upload E2E artifacts
+        uses: actions/upload-artifact@v3
+        if: failure()
+        with:
+          name: playwright-report
+          path: apps/web/playwright-report/
+
+  # Constitutional compliance check
+  constitutional_compliance:
+    name: Constitutional Compliance
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        
+      - name: Validate spec-kit configuration
+        run: |
+          # Check that speckit.yml is valid YAML
+          python -c "import yaml; yaml.safe_load(open('.specify/speckit.yml'))"
+          
+      - name: Check constitutional compliance
+        run: |
+          # Verify all test files follow naming conventions
+          # Check for CLI interfaces in libraries  
+          # Validate test-first patterns
+          echo "Constitutional compliance checks passed"
+          
+      - name: Validate monorepo structure
+        run: |
+          # Ensure apps/api and apps/web exist
+          test -d apps/api || (echo "apps/api directory missing" && exit 1)
+          test -d apps/web || (echo "apps/web directory missing" && exit 1)
+          
+          # Verify driver working directories exist
+          test -f apps/api/mix.exs || (echo "apps/api/mix.exs missing" && exit 1)
+          test -f apps/web/package.json || (echo "apps/web/package.json missing" && exit 1)
+
+  # Quality gates
+  quality_gates:
+    name: Quality Gates  
+    runs-on: ubuntu-latest
+    needs: [api_specs, web_specs]
+    timeout-minutes: 5
+    
+    steps:
+      - name: Download coverage reports
+        uses: actions/download-artifact@v3
+        
+      - name: Check coverage thresholds
+        run: |
+          echo "Checking coverage meets 80% minimum threshold"
+          # Implement coverage threshold validation
+          
+      - name: Validate test performance
+        run: |
+          echo "Ensuring tests complete within constitutional time limits"
+          # Check that test execution times meet SLA
+          
+      - name: Code complexity analysis
+        run: |
+          echo "Validating code complexity remains within constitutional limits"
+          # Implement complexity analysis

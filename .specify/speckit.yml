@@ -1,0 +1,290 @@
+# Spec-Kit Configuration for Depa Finder Monorepo
+# Supports Elixir API + React Web applications
+
+name: "depa_finder"
+description: "Rental listing scraper with Elixir backend and React frontend"
+version: "1.0.0"
+
+# Root configuration
+root: "."
+constitution: ".specify/memory/constitution.md"
+
+# Driver definitions for each app in the monorepo
+drivers:
+  elixir_api:
+    name: "Elixir API Backend"
+    description: "Phoenix-style API backend in Elixir"
+    working_directory: "apps/api"
+    language: "elixir"
+    test_framework: "exunit"
+    
+    # Test execution configuration
+    command: "mix test"
+    env:
+      MIX_ENV: "test"
+    timeout: 120 # 2 minutes for backend tests
+    
+    # Spec file patterns
+    spec_patterns:
+      - "test/**/*_test.exs"
+      - "test/**/*_spec.exs"
+    
+    # Source code mapping
+    source_patterns:
+      - "lib/**/*.ex"
+      - "test/**/*.ex"
+    
+    # Include/exclude patterns
+    includes:
+      - "**/*_test.exs"
+      - "**/*_spec.exs"
+    excludes:
+      - "_build/**"
+      - "deps/**"
+      - "priv/static/**"
+
+  react_web:
+    name: "React Web Frontend"
+    description: "TypeScript React frontend with Vite"
+    working_directory: "apps/web"
+    language: "typescript"
+    test_framework: "vitest"
+    
+    # Test execution configuration  
+    command: "pnpm test"
+    env:
+      NODE_ENV: "test"
+    timeout: 60 # 1 minute for frontend tests
+    
+    # Spec file patterns
+    spec_patterns:
+      - "src/**/*.test.ts"
+      - "src/**/*.test.tsx" 
+      - "src/**/*.spec.ts"
+      - "src/**/*.spec.tsx"
+    
+    # Source code mapping
+    source_patterns:
+      - "src/**/*.ts"
+      - "src/**/*.tsx"
+      - "src/**/*.js"
+      - "src/**/*.jsx"
+    
+    # Include/exclude patterns
+    includes:
+      - "**/*.{test,spec}.{ts,tsx,js,jsx}"
+    excludes:
+      - "node_modules/**"
+      - "dist/**"
+      - "build/**"
+
+# Spec domains organize tests by responsibility
+domains:
+  api_contracts:
+    description: "HTTP API request/response specifications"
+    tags: ["api", "contract", "http"]
+    drivers: ["elixir_api"]
+    patterns:
+      - "apps/api/test/contracts/**/*_test.exs"
+      - "apps/api/test/**/*_contract_test.exs"
+    
+  business_logic:
+    description: "Domain models and business rule specifications"  
+    tags: ["domain", "business", "logic"]
+    drivers: ["elixir_api"]
+    patterns:
+      - "apps/api/test/lib/**/*_test.exs"
+      - "apps/api/test/**/*_logic_test.exs"
+    
+  ui_components:
+    description: "React component behavior and rendering specifications"
+    tags: ["ui", "component", "react"]
+    drivers: ["react_web"]
+    patterns:
+      - "apps/web/src/components/**/*.{test,spec}.{ts,tsx}"
+      - "apps/web/src/**/*.component.{test,spec}.{ts,tsx}"
+      
+  ui_integration:
+    description: "Frontend service integration and state management"
+    tags: ["ui", "integration", "api"]
+    drivers: ["react_web"]
+    patterns:
+      - "apps/web/src/services/**/*.{test,spec}.{ts,tsx}"
+      - "apps/web/src/**/*.integration.{test,spec}.{ts,tsx}"
+      
+  e2e_journeys:
+    description: "End-to-end user journey specifications"
+    tags: ["e2e", "journey", "integration"]
+    drivers: ["elixir_api", "react_web"]
+    patterns:
+      - "apps/api/test/e2e/**/*_test.exs"
+      - "apps/web/src/e2e/**/*.{test,spec}.{ts,tsx}"
+
+# Workflow definitions for different testing scenarios
+workflows:
+  fast_specs:
+    name: "Fast Unit Specs"
+    description: "Run only unit-level specs for rapid feedback"
+    timeout: 30
+    parallel: true
+    tasks:
+      - driver: "elixir_api"
+        command: "mix test --exclude integration"
+        tags: ["unit"]
+      - driver: "react_web" 
+        command: "pnpm test:unit"
+        tags: ["unit"]
+        
+  api_specs:
+    name: "Backend API Specs"
+    description: "Run all backend specifications including integration tests"
+    timeout: 120
+    parallel: false
+    tasks:
+      - driver: "elixir_api"
+        command: "mix test"
+        domains: ["api_contracts", "business_logic"]
+        
+  web_specs:
+    name: "Frontend Web Specs" 
+    description: "Run all frontend specifications"
+    timeout: 60
+    parallel: false
+    tasks:
+      - driver: "react_web"
+        command: "pnpm test"
+        domains: ["ui_components", "ui_integration"]
+        
+  full_specs:
+    name: "Full Spec Suite"
+    description: "Complete test suite for CI/CD"
+    timeout: 300 # 5 minutes
+    parallel: true
+    tasks:
+      - driver: "elixir_api"
+        command: "mix test"
+      - driver: "react_web"
+        command: "pnpm test"
+      - workflow: "e2e_specs"
+        
+  slow_specs:
+    name: "Comprehensive E2E and Performance"
+    description: "Full end-to-end testing with performance validation"
+    timeout: 1800 # 30 minutes
+    parallel: false
+    tasks:
+      - driver: "elixir_api"
+        command: "mix test --include slow"
+        tags: ["slow", "performance"]
+      - driver: "react_web"
+        command: "pnpm test:e2e"
+        tags: ["e2e", "performance"]
+        
+  e2e_specs:
+    name: "End-to-End Journey Specs"
+    description: "Cross-app integration and user journey testing"
+    timeout: 180 # 3 minutes
+    parallel: false
+    setup:
+      - "docker-compose up -d postgres"
+      - "cd apps/api && mix ecto.setup"
+    teardown:
+      - "docker-compose down"
+    tasks:
+      - driver: "elixir_api"
+        command: "mix test --only e2e"
+        tags: ["e2e"]
+      - driver: "react_web"
+        command: "pnpm test:e2e"
+        tags: ["e2e"]
+
+# Scaffolding templates for new specifications
+templates:
+  elixir_test:
+    name: "Elixir Test Module"
+    description: "Template for new Elixir API test files"
+    driver: "elixir_api"
+    path: "apps/api/test"
+    template: ".specify/templates/elixir_test.exs.template"
+    
+  react_component_test:
+    name: "React Component Test"
+    description: "Template for React component test files"  
+    driver: "react_web"
+    path: "apps/web/src"
+    template: ".specify/templates/react_test.tsx.template"
+    
+  api_contract_test:
+    name: "API Contract Test"
+    description: "Template for API contract validation tests"
+    driver: "elixir_api" 
+    path: "apps/api/test/contracts"
+    template: ".specify/templates/api_contract_test.exs.template"
+
+# Default configurations
+defaults:
+  driver: "elixir_api"
+  workflow: "fast_specs"
+  parallel: true
+  timeout: 60
+  
+# Integration with external tools
+integrations:
+  vscode:
+    enabled: true
+    test_explorer: true
+    problem_matchers: ["$mix", "$tsc"]
+    
+  github_actions:
+    enabled: true
+    workflow_file: ".github/workflows/specs.yml"
+    matrix_strategy: true
+    
+  docker:
+    enabled: true
+    test_services:
+      - postgres
+      - redis
+      
+# Quality gates and validation rules
+quality_gates:
+  coverage:
+    enabled: true
+    minimum: 80
+    drivers: ["elixir_api", "react_web"]
+    
+  performance:
+    enabled: true
+    max_test_duration: 300
+    max_spec_file_size: "1MB"
+    
+  complexity:
+    enabled: true
+    max_cyclomatic_complexity: 10
+    max_test_nesting_depth: 3
+
+# Reporting and output configuration
+reporting:
+  formats: ["junit", "json", "html"]
+  output_directory: "test-results"
+  coverage_directory: "coverage"
+  
+  notifications:
+    slack:
+      enabled: false
+      webhook_url: "${SLACK_WEBHOOK_URL}"
+    email:
+      enabled: false
+      recipients: []
+
+# Development aid configurations  
+development:
+  watch_mode: true
+  auto_run_on_save: true
+  parallel_execution: true
+  cache_enabled: true
+  
+  editor_integrations:
+    test_runner: true
+    code_lens: true
+    inline_diagnostics: true

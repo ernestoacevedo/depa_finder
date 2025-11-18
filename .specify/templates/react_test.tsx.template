@@ -1,0 +1,50 @@
+import { render, screen, fireEvent, waitFor } from '@testing-library/react'
+import { describe, it, expect, vi, beforeEach } from 'vitest'
+import {{component_name}} from './{{component_name}}'
+
+describe('{{component_name}}', () => {
+  const defaultProps = {
+    {{default_props}}
+  }
+
+  beforeEach(() => {
+    vi.clearAllMocks()
+  })
+
+  it('renders correctly with default props', () => {
+    render(<{{component_name}} {...defaultProps} />)
+    
+    expect(screen.getByRole('{{role}}')).toBeInTheDocument()
+  })
+
+  it('handles user interactions', async () => {
+    const mockHandler = vi.fn()
+    render(<{{component_name}} {...defaultProps} {{event_prop}}={mockHandler} />)
+    
+    const element = screen.getByRole('{{interactive_role}}')
+    fireEvent.{{event_type}}(element)
+    
+    await waitFor(() => {
+      expect(mockHandler).toHaveBeenCalledWith({{expected_args}})
+    })
+  })
+
+  it('displays error states appropriately', () => {
+    render(<{{component_name}} {...defaultProps} error="{{error_message}}" />)
+    
+    expect(screen.getByText('{{error_message}}')).toBeInTheDocument()
+  })
+
+  it('handles loading states', () => {
+    render(<{{component_name}} {...defaultProps} loading={true} />)
+    
+    expect(screen.getByRole('status')).toBeInTheDocument()
+  })
+
+  it('meets accessibility requirements', () => {
+    render(<{{component_name}} {...defaultProps} />)
+    
+    // Test ARIA attributes, keyboard navigation, screen reader support
+    expect(screen.getByRole('{{role}}')).toHaveAttribute('aria-label')
+  })
+})

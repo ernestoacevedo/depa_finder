@@ -1,0 +1,65 @@
+defmodule {{app_name}}Web.{{controller_name}}ControllerContractTest do
+  use {{app_name}}Web.ConnCase, async: true
+  use ExVCR.Mock, adapter: ExVCR.Adapter.Hackney
+  
+  alias {{app_name}}.{{context}}
+  
+  describe "{{endpoint_method}} {{endpoint_path}}" do
+    setup %{conn: conn} do
+      conn = 
+        conn
+        |> put_req_header("accept", "application/json")
+        |> put_req_header("content-type", "application/json")
+      
+      {:ok, conn: conn}
+    end
+    
+    test "returns {{success_status}} with valid request", %{conn: conn} do
+      # Arrange
+      {{arrange_test_data}}
+      
+      # Act
+      response = 
+        conn
+        |> {{http_verb}}("{{endpoint_path}}", {{request_body}})
+        |> json_response({{success_status}})
+      
+      # Assert - Schema validation
+      assert {{success_schema_validation}}
+      assert response["{{expected_field}}"] == {{expected_value}}
+    end
+    
+    test "returns {{error_status}} with invalid request", %{conn: conn} do
+      # Act
+      response = 
+        conn
+        |> {{http_verb}}("{{endpoint_path}}", {{invalid_request_body}})
+        |> json_response({{error_status}})
+      
+      # Assert - Error schema validation  
+      assert {{error_schema_validation}}
+      assert response["error"]["message"] =~ "{{error_message_pattern}}"
+    end
+    
+    test "returns 401 when not authenticated" do
+      # Test authentication requirements
+    end
+    
+    test "returns 403 when not authorized" do
+      # Test authorization requirements
+    end
+    
+    test "handles malformed JSON gracefully" do
+      # Test request parsing error handling
+    end
+  end
+  
+  # JSON schema validation helpers
+  defp validate_{{resource}}_schema(response) do
+    # Implement JSON schema validation for response structure
+  end
+  
+  defp validate_error_schema(response) do
+    # Implement standardized error response validation
+  end
+end
