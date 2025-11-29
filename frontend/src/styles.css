@@ -45,12 +45,22 @@ header {
   font-size: clamp(2.25rem, 4vw, 3.25rem);
 }
 
+.brand-copy .eyebrow-row {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.5rem;
+}
+
 .brand-copy .eyebrow {
   margin: 0;
   text-transform: uppercase;
   letter-spacing: 0.25em;
   font-size: 0.75rem;
   color: var(--color-muted);
+}
+
+.brand-copy .eyebrow-row svg {
+  color: var(--color-accent);
 }
 
 .brand-copy .subtitle {
@@ -78,12 +88,19 @@ header {
   object-fit: cover;
 }
 
+.user-chip svg {
+  color: var(--color-accent);
+}
+
 .user-chip button {
   border: none;
   background: transparent;
   font-weight: 600;
   cursor: pointer;
   color: var(--color-accent);
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
 }
 
 .login-panel {
@@ -315,6 +332,9 @@ header {
 
 .likes-panel h2 {
   margin-top: 0;
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
 }
 
 .likes-panel ul {
@@ -343,8 +363,17 @@ header {
   color: var(--color-text);
 }
 
+.likes-panel .like-title-row {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+}
+
 .likes-panel small {
   color: var(--color-muted);
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
 }
 
 @media (max-width: 900px) {

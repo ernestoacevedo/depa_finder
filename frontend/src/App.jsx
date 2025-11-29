@@ -1,5 +1,12 @@
 import { useEffect, useMemo, useState } from "react";
 import { GoogleOAuthProvider } from "@react-oauth/google";
+import {
+  Buildings,
+  Heart,
+  MapPinLine,
+  SignOut,
+  UserCircle
+} from "@phosphor-icons/react";
 import LoginGate from "./components/LoginGate.jsx";
 import SwipeDeck from "./components/SwipeDeck.jsx";
 import useListings from "./hooks/useListings.js";
@@ -55,7 +62,10 @@ export default function App() {
       <main className="app-shell">
         <header>
           <div className="brand-copy">
-            <p className="eyebrow">Explora arriendos preseleccionados</p>
+            <div className="eyebrow-row">
+              <Buildings size={22} weight="duotone" />
+              <p className="eyebrow">Explora arriendos preseleccionados</p>
+            </div>
             <p className="subtitle">
               Haz swipe para descubrir departamentos nuevos y guarda tus favoritos
               en segundos.
@@ -63,9 +73,16 @@ export default function App() {
           </div>
           {user ? (
             <div className="user-chip">
-              {user.avatar ? <img src={user.avatar} alt={user.name} /> : null}
+              {user.avatar ? (
+                <img src={user.avatar} alt={user.name} />
+              ) : (
+                <UserCircle size={32} weight="duotone" />
+              )}
               <span>{user.name}</span>
-              <button onClick={handleLogout}>Salir</button>
+              <button onClick={handleLogout}>
+                <SignOut size={18} weight="bold" />
+                <span>Salir</span>
+              </button>
             </div>
           ) : null}
         </header>
@@ -83,15 +100,24 @@ export default function App() {
               />
             </div>
             <aside className="likes-panel">
-              <h2>Me gustaron</h2>
+              <h2>
+                <Heart size={20} weight="fill" />
+                <span>Me gustaron</span>
+              </h2>
               {likes.length === 0 ? (
                 <p>Haz swipe a la derecha para guardar.</p>
               ) : (
                 <ul>
                   {likes.map((listing) => (
                     <li key={listing.id}>
-                      <span className="listing-title">{listing.title}</span>
-                      <small>{listing.comuna}</small>
+                      <div className="like-title-row">
+                        <Heart size={18} weight="duotone" />
+                        <span className="listing-title">{listing.title}</span>
+                      </div>
+                      <small className="like-meta">
+                        <MapPinLine size={14} weight="bold" />
+                        <span>{listing.comuna}</span>
+                      </small>
                     </li>
                   ))}
                 </ul>
