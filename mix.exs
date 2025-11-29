@@ -18,12 +18,15 @@ defmodule RentBot.MixProject do
     mod: {RentBot.Application, []}
   ]
   defp deps, do: [
+    {:phoenix, "~> 1.7"},
+    {:plug_cowboy, "~> 2.6"},
     {:req, "~> 0.5"},
     {:floki, "~> 0.36"},
     {:jason, "~> 1.4"},
     {:ecto, "~> 3.11"},
     {:ecto_sql, "~> 3.11"},
     {:ecto_sqlite3, "~> 0.18"},
-    {:dotenv, "~> 3.0"}
+    {:dotenv, "~> 3.0"},
+    {:cors_plug, "~> 3.0"}
   ]
 end

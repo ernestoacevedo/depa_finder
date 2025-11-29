@@ -13,6 +13,7 @@ defmodule RentBot.Listing do
     field :bathrooms, :integer
     field :address, :string
     field :comuna, :string
+    field :image_url, :string
     field :published_at, :utc_datetime
     field :fingerprint, :string
     timestamps(updated_at: false)

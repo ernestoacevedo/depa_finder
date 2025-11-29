@@ -6,3 +6,5 @@ config :logger, level: :warning
 config :rent_bot, RentBot.Repo,
   database: "rent_bot_test.sqlite3",
   pool: Ecto.Adapters.SQL.Sandbox
+
+config :rent_bot, RentBotWeb.Endpoint, server: false
