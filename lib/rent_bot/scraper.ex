@@ -1,4 +1,6 @@
 defmodule RentBot.Scraper do
+  require Logger
+
   @seeds [
     "https://www.portalinmobiliario.com/arriendo/departamento/providencia-metropolitana",
     "https://www.portalinmobiliario.com/arriendo/departamento/las-condes-metropolitana"
@@ -6,12 +8,13 @@ defmodule RentBot.Scraper do
   @offsets [nil, 301, 601]
   @detail_timeout 15_000
   @detail_max_concurrency 4
-  @req_headers [
+  @base_headers [
     {"user-agent",
      "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/15.1 Safari/605.1.15"},
     {"accept-language", "es-CL,es;q=0.9,en-US;q=0.8,en;q=0.7"},
     {"accept",
-     "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8"}
+     "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8"},
+    {"accept-encoding", "gzip, deflate"}
   ]
 
   def fetch_all do
@@ -41,10 +44,23 @@ defmodule RentBot.Scraper do
   end
 
   defp fetch_list(url) do
-    html = Req.get!(url, receive_timeout: 15_000, headers: @req_headers).body
-    extract_items(html)
-  rescue
-    _ -> []
+    case Req.get(url, receive_timeout: 15_000, headers: req_headers(url)) do
+      {:ok, %Req.Response{status: 200, body: body}} ->
+        if verification_wall?(body) do
+          maybe_log_cookie_hint(url)
+          []
+        else
+          extract_items(body)
+        end
+
+      {:ok, %Req.Response{status: status}} ->
+        Logger.warn("Unexpected status #{status} when fetching #{url}")
+        []
+
+      {:error, reason} ->
+        Logger.warn("Request error for #{url}: #{inspect(reason)}")
+        []
+    end
   end
 
   defp extract_items(html) do
@@ -230,7 +246,7 @@ defmodule RentBot.Scraper do
 
     %{
       bedrooms: find_first_integer(texts, "dormitorio"),
-      bathrooms: find_first_integer(texts, "baño"),
+      bathrooms: find_first_integer(texts, ~r/bañ|bano|bath/i),
       area_m2: find_first_float(texts, ~r/m(?:2|\x{00B2})/iu)
     }
   end
@@ -345,7 +361,7 @@ defmodule RentBot.Scraper do
   defp maybe_attach_image(listing), do: listing
 
   defp fetch_listing_image(url) do
-    case Req.get(url, receive_timeout: @detail_timeout, headers: @req_headers) do
+    case Req.get(url, receive_timeout: @detail_timeout, headers: req_headers(url)) do
       {:ok, %{body: body}} -> extract_image_from_html(body)
       _ -> nil
     end
@@ -354,7 +370,8 @@ defmodule RentBot.Scraper do
   end
 
   defp extract_image_from_html(body) do
-    with {:ok, doc} <- Floki.parse_document(body) do
+    with false <- verification_wall?(body),
+         {:ok, doc} <- Floki.parse_document(body) do
       extract_image_from_preloaded_state(doc) ||
         extract_image_from_gallery_mosaic(doc)
     else
@@ -455,4 +472,42 @@ defmodule RentBot.Scraper do
 
   defp normalize_currency(currency) when is_binary(currency), do: String.upcase(currency)
   defp normalize_currency(_), do: nil
+
+  defp req_headers(url \\ nil) do
+    headers =
+      case runtime_cookie() do
+        cookie when is_binary(cookie) and cookie != "" ->
+          [{"cookie", cookie} | @base_headers]
+
+        _ ->
+          @base_headers
+      end
+
+    if is_binary(url) do
+      [{"referer", "https://www.portalinmobiliario.com/"} | headers]
+    else
+      headers
+    end
+  end
+
+  defp verification_wall?(body) when is_binary(body) do
+    String.contains?(body, "account-verification") or String.contains?(body, "captcha")
+  end
+
+  defp verification_wall?(_), do: false
+
+  defp runtime_cookie do
+    System.get_env("PORTALINMOBILIARIO_COOKIE") ||
+      (:rent_bot
+       |> Application.get_env(:http, [])
+       |> Keyword.get(:cookie))
+  end
+
+  defp maybe_log_cookie_hint(url) do
+    if runtime_cookie() in [nil, ""] do
+      Logger.warn("Blocked by account verification when fetching #{url} (no session cookie configured)")
+    else
+      Logger.warn("Blocked by account verification when fetching #{url} even with provided cookie")
+    end
+  end
 end

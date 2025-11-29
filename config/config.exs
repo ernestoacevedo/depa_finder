@@ -21,7 +21,11 @@ config :phoenix, :json_library, Jason
 
 config :rent_bot, :filters,
   comunas: ["Providencia", "Las Condes"],
-  precio_max: 1_100_000, min_m2: 60, min_dorms: 2
+  precio_max: 1_100_000, min_m2: 60, min_dorms: 2, min_bathrooms: 2
+
+config :rent_bot, :http,
+  # Optional portalinmobiliario session/captcha bypass; set via env var so it is not committed
+  cookie: System.get_env("PORTALINMOBILIARIO_COOKIE")
 
 # Importar configuración específica del entorno
 import_config "#{config_env()}.exs"
