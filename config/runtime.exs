@@ -32,6 +32,23 @@ chat_id =
     For production: Set the environment variable in your deployment system.
     """
 
+signing_salt =
+  System.get_env("PHOENIX_SIGNING_SALT") ||
+    raise """
+    Environment variable PHOENIX_SIGNING_SALT is required.
+
+    For development: Create a .env file in the project root with:
+    PHOENIX_SIGNING_SALT=your_random_salt_here
+
+    For production: Set the environment variable in your deployment system.
+
+    You can generate a secure signing salt with:
+    mix phx.gen.secret 32
+    """
+
 config :rent_bot, :telegram,
   bot_token: bot_token,
   chat_id: chat_id
+
+config :rent_bot,
+  signing_salt: signing_salt

@@ -4,6 +4,8 @@ defmodule RentBot.Scraper do
     "https://www.portalinmobiliario.com/arriendo/departamento/las-condes-metropolitana"
   ]
   @offsets [nil, 301, 601]
+  @detail_timeout 15_000
+  @detail_max_concurrency 4
   @req_headers [
     {"user-agent",
      "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/15.1 Safari/605.1.15"},
@@ -20,7 +22,7 @@ defmodule RentBot.Scraper do
 
     uf_rate = RentBot.Currency.uf_rate()
 
-    results =
+    listings =
       urls
       |> Task.async_stream(&fetch_list/1, timeout: 30_000, max_concurrency: 4)
       |> Enum.flat_map(fn
@@ -30,7 +32,12 @@ defmodule RentBot.Scraper do
       |> Enum.map(&convert_currency(&1, uf_rate))
       |> Enum.map(&RentBot.Normalize.enrich/1)
 
-    {:ok, Enum.uniq_by(results, & &1.url)}
+    listings =
+      listings
+      |> Enum.uniq_by(& &1.url)
+      |> attach_images()
+
+    {:ok, listings}
   end
 
   defp fetch_list(url) do
@@ -305,6 +312,119 @@ defmodule RentBot.Scraper do
       String.starts_with?(trimmed, "/") -> "https://www.portalinmobiliario.com" <> trimmed
       true -> "https://" <> trimmed
     end
+  end
+
+  defp attach_images(listings) do
+    results =
+      listings
+      |> Task.async_stream(&maybe_attach_image/1,
+        timeout: @detail_timeout,
+        max_concurrency: @detail_max_concurrency
+      )
+      |> Enum.to_list()
+
+    listings
+    |> Enum.zip(results)
+    |> Enum.map(fn
+      {_original, {:ok, enriched}} -> enriched
+      {original, _} -> original
+    end)
+  end
+
+  defp maybe_attach_image(%{image_url: url} = listing) when is_binary(url) and url != "" do
+    listing
+  end
+
+  defp maybe_attach_image(%{url: url} = listing) when is_binary(url) do
+    case fetch_listing_image(url) do
+      nil -> listing
+      image_url -> Map.put(listing, :image_url, image_url)
+    end
+  end
+
+  defp maybe_attach_image(listing), do: listing
+
+  defp fetch_listing_image(url) do
+    case Req.get(url, receive_timeout: @detail_timeout, headers: @req_headers) do
+      {:ok, %{body: body}} -> extract_image_from_html(body)
+      _ -> nil
+    end
+  rescue
+    _ -> nil
+  end
+
+  defp extract_image_from_html(body) do
+    with {:ok, doc} <- Floki.parse_document(body) do
+      extract_image_from_preloaded_state(doc) ||
+        extract_image_from_gallery_mosaic(doc)
+    else
+      _ -> nil
+    end
+  end
+
+  defp extract_image_from_preloaded_state(doc) do
+    with [node | _] <- Floki.find(doc, ~s(script#__PRELOADED_STATE__)),
+         json when is_binary(json) <- node |> Floki.children() |> Enum.join(),
+         {:ok, data} <- Jason.decode(json) do
+      data
+      |> get_in(["pageState", "initialState", "components", "gallery"])
+      |> build_image_from_gallery()
+    else
+      _ -> nil
+    end
+  end
+
+  defp build_image_from_gallery(%{"pictures" => [picture | _]} = gallery) do
+    template =
+      get_in(gallery, ["picture_config", "template_zoom"]) ||
+        get_in(gallery, ["picture_config", "template"]) ||
+        get_in(gallery, ["picture_config", "template_thumbnail"])
+
+    fill_gallery_template(template, picture)
+  end
+
+  defp build_image_from_gallery(_), do: nil
+
+  defp fill_gallery_template(nil, _), do: nil
+
+  defp fill_gallery_template(template, %{"id" => id} = picture) when is_binary(id) do
+    sanitized = Map.get(picture, "sanitized_title") || ""
+
+    template
+    |> String.replace("{id}", id)
+    |> String.replace("{sanitizedTitle}", sanitized)
+  end
+
+  defp fill_gallery_template(_, _), do: nil
+
+  defp extract_image_from_gallery_mosaic(doc) do
+    doc
+    |> Floki.find("#gallery_mosaic img, .gallery_mosaic img, .gallery-mosaic img")
+    |> Enum.find_value(&image_from_img_node/1)
+  end
+
+  defp image_from_img_node(node) do
+    ["data-src", "data-srcset", "src"]
+    |> Enum.find_value(fn attr ->
+      node
+      |> Floki.attribute(attr)
+      |> List.first()
+      |> pick_from_srcset()
+    end)
+  end
+
+  defp pick_from_srcset(nil), do: nil
+
+  defp pick_from_srcset(srcset) do
+    srcset
+    |> String.split(",", parts: 2)
+    |> hd()
+    |> String.trim()
+    |> String.split(" ", parts: 2)
+    |> hd()
+    |> normalize_url()
+  rescue
+    _ -> nil
   end
 
   defp convert_currency(%{currency: currency} = item, uf_rate) do
