@@ -6,6 +6,8 @@ defmodule RentBot.Scraper do
     "https://www.portalinmobiliario.com/arriendo/departamento/las-condes-metropolitana"
   ]
   @offsets [nil, 301, 601]
+  @toctoc_seed "https://www.toctoc.com/arriendo/departamento/metropolitana/providencia?o=menu_arriendodepto"
+  @toctoc_pages 1..3
   @detail_timeout 15_000
   @detail_max_concurrency 4
   @base_headers [
@@ -17,21 +19,19 @@ defmodule RentBot.Scraper do
     {"accept-encoding", "gzip, deflate"}
   ]
 
-  def fetch_all do
-    urls =
-      for seed <- @seeds, off <- @offsets do
-        if off, do: "#{seed}/_Desde_#{off}", else: seed
-      end
+  @toctoc_headers [
+    {"user-agent",
+     "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/15.1 Safari/605.1.15"},
+    {"accept-language", "es-CL,es;q=0.9,en-US;q=0.8,en;q=0.7"},
+    {"accept",
+     "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8"}
+  ]
 
+  def fetch_all do
     uf_rate = RentBot.Currency.uf_rate()
 
     listings =
-      urls
-      |> Task.async_stream(&fetch_list/1, timeout: 30_000, max_concurrency: 4)
-      |> Enum.flat_map(fn
-        {:ok, xs} when is_list(xs) -> xs
-        _ -> []
-      end)
+      (fetch_portal_listings() ++ fetch_toctoc_listings())
       |> Enum.map(&convert_currency(&1, uf_rate))
       |> Enum.map(&RentBot.Normalize.enrich/1)
 
@@ -41,6 +41,35 @@ defmodule RentBot.Scraper do
       |> attach_images()
 
     {:ok, listings}
+  end
+
+  defp fetch_portal_listings do
+    urls =
+      for seed <- @seeds, off <- @offsets do
+        if off, do: "#{seed}/_Desde_#{off}", else: seed
+      end
+
+    urls
+    |> Task.async_stream(&fetch_list/1, timeout: 30_000, max_concurrency: 4)
+    |> Enum.flat_map(fn
+      {:ok, xs} when is_list(xs) -> xs
+      _ -> []
+    end)
+  end
+
+  defp fetch_toctoc_listings do
+    urls =
+      Enum.map(@toctoc_pages, fn
+        1 -> @toctoc_seed
+        page -> "#{@toctoc_seed}&pagina=#{page}"
+      end)
+
+    urls
+    |> Task.async_stream(&fetch_toctoc_page/1, timeout: 30_000, max_concurrency: 3)
+    |> Enum.flat_map(fn
+      {:ok, xs} when is_list(xs) -> xs
+      _ -> []
+    end)
   end
 
   defp fetch_list(url) do
@@ -63,6 +92,21 @@ defmodule RentBot.Scraper do
     end
   end
 
+  defp fetch_toctoc_page(url) do
+    case Req.get(url, receive_timeout: 20_000, headers: toctoc_headers(url)) do
+      {:ok, %Req.Response{status: 200, body: body}} ->
+        extract_toctoc_items(body)
+
+      {:ok, %Req.Response{status: status}} ->
+        Logger.warn("Unexpected status #{status} when fetching #{url}")
+        []
+
+      {:error, reason} ->
+        Logger.warn("Request error for #{url}: #{inspect(reason)}")
+        []
+    end
+  end
+
   defp extract_items(html) do
     with {:ok, doc} <- Floki.parse_document(html) do
       extract_jsonld(doc) ++ extract_polycards(doc)
@@ -71,7 +115,7 @@ defmodule RentBot.Scraper do
     end
   end
 
-  defp extract_jsonld(doc) do
+  defp extract_jsonld(doc, source \\ "portalinmobiliario") do
     doc
     |> Floki.find(~s(script[type="application/ld+json"]))
     |> Enum.map(fn node ->
@@ -86,7 +130,7 @@ defmodule RentBot.Scraper do
       [_ | _] = list -> list
       _ -> []
     end)
-    |> from_jsonld_list()
+    |> from_jsonld_list(source)
   end
 
   defp extract_polycards(doc) do
@@ -105,7 +149,7 @@ defmodule RentBot.Scraper do
 
   defp decode_preloaded_polycards(json) when is_binary(json) do
     with {:ok, data} <- Jason.decode(json),
-        results when is_list(results) <- get_in(data, ["pageState", "initialState", "results"]) do
+         results when is_list(results) <- get_in(data, ["pageState", "initialState", "results"]) do
       results |> Enum.flat_map(&polycard_block_items/1)
     else
       _ -> []
@@ -144,7 +188,7 @@ defmodule RentBot.Scraper do
     price_value = Map.get(price_info, "value")
 
     with url when is_binary(url) <- url,
-        title when is_binary(title) <- title do
+         title when is_binary(title) <- title do
       %{
         source: "portalinmobiliario",
         url: url,
@@ -163,26 +207,181 @@ defmodule RentBot.Scraper do
     end
   end
 
-  defp from_jsonld_list(blocks) do
+  defp extract_toctoc_items(html) do
+    with {:ok, doc} <- Floki.parse_document(html) do
+      extract_toctoc_next(doc) ++ extract_jsonld(doc, "toctoc")
+    else
+      _ -> []
+    end
+  end
+
+  defp extract_toctoc_next(doc) do
+    doc
+    |> Floki.find(~s(script#__NEXT_DATA__))
+    |> Enum.flat_map(fn node ->
+      node
+      |> Floki.children()
+      |> Enum.join()
+      |> decode_toctoc_next()
+    end)
+  end
+
+  defp decode_toctoc_next("") do
+    []
+  end
+
+  defp decode_toctoc_next(json) when is_binary(json) do
+    with {:ok, data} <- Jason.decode(json) do
+      data
+      |> find_toctoc_blocks()
+      |> Enum.flat_map(fn block ->
+        block
+        |> Enum.map(&build_toctoc_item/1)
+        |> Enum.reject(&is_nil/1)
+      end)
+    else
+      _ -> []
+    end
+  end
+
+  defp decode_toctoc_next(_), do: []
+
+  defp find_toctoc_blocks(value) when is_list(value) do
+    candidate =
+      case value do
+        [%{} | _] -> [value]
+        _ -> []
+      end
+
+    candidate ++ Enum.flat_map(value, &find_toctoc_blocks/1)
+  end
+
+  defp find_toctoc_blocks(value) when is_map(value) do
+    explicit =
+      ["listings", "items", "properties", "results", "data"]
+      |> Enum.flat_map(fn key ->
+        case Map.get(value, key) do
+          list when is_list(list) -> [list]
+          _ -> []
+        end
+      end)
+
+    explicit ++ (value |> Map.values() |> Enum.flat_map(&find_toctoc_blocks/1))
+  end
+
+  defp find_toctoc_blocks(_), do: []
+
+  defp build_toctoc_item(%{} = listing) do
+    url = first_present(listing, ["url", "permalink", "Url", "Permalink", "Link", "link"])
+    image_url = first_present(listing, ["image", "image_url", "ImageUrl", "photo", "PictureUrl"])
+
+    title =
+      first_present(listing, ["title", "Title", "headline", "SeoTitle", "seo_title", "name"]) ||
+        first_present(listing, ["Address"])
+
+    price_value =
+      first_present(listing, ["price", "Price", "price_clp", "Precio", "PrecioUf", "PrecioClp"])
+
+    currency =
+      first_present(listing, ["currency", "Currency", "Moneda", "CurrencyCode", "currency_code"]) ||
+        detect_currency_from_price(price_value)
+
+    area_m2 = first_present(listing, ["Surface", "surface", "superficie", "Area", "area"])
+    bedrooms = first_present(listing, ["Dormitorios", "dormitorios", "Bedrooms", "bedrooms"])
+    bathrooms = first_present(listing, ["Banos", "BanosCantidad", "Bathrooms", "bathrooms"])
+
+    comuna =
+      first_present(listing, [
+        "Comuna",
+        "comuna",
+        "Commune",
+        "CommuneName",
+        "District",
+        "district"
+      ])
+
+    address =
+      first_present(listing, [
+        "Direccion",
+        "direccion",
+        "address",
+        "Address",
+        "street",
+        "street_name"
+      ])
+
+    published_at =
+      first_present(listing, ["PublishDate", "publish_date", "published_at", "fechaPublicacion"])
+
+    with url when is_binary(url) <- normalize_url(url, "www.toctoc.com"),
+         title when is_binary(title) <- title do
+      %{
+        source: "toctoc",
+        url: url,
+        title: title,
+        price_clp: parse_int(price_value),
+        currency: currency,
+        area_m2: parse_float(area_m2),
+        bedrooms: parse_int(bedrooms),
+        bathrooms: parse_int(bathrooms),
+        address: address,
+        comuna: comuna,
+        image_url: normalize_url(image_url),
+        published_at: parse_date(published_at)
+      }
+    else
+      _ -> nil
+    end
+  end
+
+  defp build_toctoc_item(_), do: nil
+
+  defp first_present(map, keys) do
+    keys
+    |> Enum.find_value(fn key ->
+      case map do
+        %{} -> Map.get(map, key)
+        _ -> nil
+      end
+    end)
+  end
+
+  defp detect_currency_from_price(value) when is_binary(value) do
+    cond do
+      String.contains?(value, "UF") -> "UF"
+      String.contains?(value, "Uf") -> "UF"
+      String.contains?(value, "$") -> "CLP"
+      true -> nil
+    end
+  end
+
+  defp detect_currency_from_price(_), do: nil
+
+  defp from_jsonld_list(blocks, source) do
     blocks
     |> Enum.flat_map(fn blk ->
       case blk["@type"] do
-        "ItemList" -> (blk["itemListElement"] || []) |> Enum.map(&pick_item/1)
-        "SearchResultsPage" -> (blk["mainEntity"] || []) |> List.wrap() |> Enum.map(&pick_item/1)
-        _ -> []
+        "ItemList" ->
+          (blk["itemListElement"] || []) |> Enum.map(&pick_item(&1, source))
+
+        "SearchResultsPage" ->
+          (blk["mainEntity"] || []) |> List.wrap() |> Enum.map(&pick_item(&1, source))
+
+        _ ->
+          []
       end
     end)
     |> Enum.reject(&is_nil/1)
   end
 
-  defp pick_item(el) do
+  defp pick_item(el, source) do
     it = Map.get(el, "item", el)
 
     with url when is_binary(url) <- it["url"] || it["mainEntityOfPage"] do
       off = it["offers"] || %{}
 
       %{
-        source: "portalinmobiliario",
+        source: source,
         url: url,
         title: it["name"],
         price_clp: parse_int(off["price"] || off["lowPrice"]),
@@ -316,16 +515,17 @@ defmodule RentBot.Scraper do
     end
   end
 
-  defp normalize_url(nil), do: nil
+  defp normalize_url(url, base_host \\ "www.portalinmobiliario.com")
+  defp normalize_url(nil, _base_host), do: nil
 
-  defp normalize_url(url) when is_binary(url) do
+  defp normalize_url(url, base_host) when is_binary(url) do
     trimmed = String.trim(url)
 
     cond do
       trimmed == "" -> nil
       String.contains?(trimmed, "://") -> trimmed
       String.starts_with?(trimmed, "//") -> "https:" <> trimmed
-      String.starts_with?(trimmed, "/") -> "https://www.portalinmobiliario.com" <> trimmed
+      String.starts_with?(trimmed, "/") -> "https://#{base_host}" <> trimmed
       true -> "https://" <> trimmed
     end
   end
@@ -490,6 +690,10 @@ defmodule RentBot.Scraper do
     end
   end
 
+  defp toctoc_headers(_url) do
+    @toctoc_headers
+  end
+
   defp verification_wall?(body) when is_binary(body) do
     String.contains?(body, "account-verification") or String.contains?(body, "captcha")
   end
@@ -498,16 +702,20 @@ defmodule RentBot.Scraper do
 
   defp runtime_cookie do
     System.get_env("PORTALINMOBILIARIO_COOKIE") ||
-      (:rent_bot
-       |> Application.get_env(:http, [])
-       |> Keyword.get(:cookie))
+      :rent_bot
+      |> Application.get_env(:http, [])
+      |> Keyword.get(:cookie)
   end
 
   defp maybe_log_cookie_hint(url) do
     if runtime_cookie() in [nil, ""] do
-      Logger.warn("Blocked by account verification when fetching #{url} (no session cookie configured)")
+      Logger.warn(
+        "Blocked by account verification when fetching #{url} (no session cookie configured)"
+      )
     else
-      Logger.warn("Blocked by account verification when fetching #{url} even with provided cookie")
+      Logger.warn(
+        "Blocked by account verification when fetching #{url} even with provided cookie"
+      )
     end
   end
 end
