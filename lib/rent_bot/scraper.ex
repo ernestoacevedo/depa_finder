@@ -6,7 +6,12 @@ defmodule RentBot.Scraper do
     "https://www.portalinmobiliario.com/arriendo/departamento/las-condes-metropolitana"
   ]
   @offsets [nil, 301, 601]
-  @toctoc_seed "https://www.toctoc.com/arriendo/departamento/metropolitana/providencia?o=menu_arriendodepto"
+  @toctoc_seeds [
+    # Providencia
+    "https://www.toctoc.com/resultados/mapa/arriendo/departamento/metropolitana/providencia/?moneda=1&precioDesde=700000&precioHasta=900000&dormitoriosDesde=2&dormitoriosHasta=&banosDesde=2&banosHasta=5&estado=0&disponibilidadEntrega=&numeroDeDiasTocToc=0&superficieDesdeUtil=0&superficieHastaUtil=0&superficieDesdeConstruida=0&superficieHastaConstruida=0&superficieDesdeTerraza=0&superficieHastaTerraza=0&superficieDesdeTerreno=0&superficieHastaTerreno=0&ordenarPor=0&pagina=1&paginaInterna=1&zoom=15&idZonaHomogenea=0&atributos=&texto=Providencia&viewport=-33.450583873234905,-70.63624806359637,-33.40842530599939,-70.58223131372333&idPoligono=47&publicador=0&temporalidad=0",
+    # Las Condes
+    "https://www.toctoc.com/resultados/mapa/arriendo/departamento/metropolitana/las-condes/?moneda=1&precioDesde=700000&precioHasta=900000&dormitoriosDesde=2&dormitoriosHasta=&banosDesde=2&banosHasta=5&estado=0&disponibilidadEntrega=&numeroDeDiasTocToc=0&superficieDesdeUtil=0&superficieHastaUtil=0&superficieDesdeConstruida=0&superficieHastaConstruida=0&superficieDesdeTerraza=0&superficieHastaTerraza=0&superficieDesdeTerreno=0&superficieHastaTerreno=0&ordenarPor=0&pagina=1&paginaInterna=1&zoom=15&idZonaHomogenea=0&atributos=&texto=Las%20Condes&viewport=-33.43,-70.58,-33.38,-70.50&publicador=0&temporalidad=0"
+  ]
   @toctoc_pages 1..3
   @detail_timeout 15_000
   @detail_max_concurrency 4
@@ -30,8 +35,15 @@ defmodule RentBot.Scraper do
   def fetch_all do
     uf_rate = RentBot.Currency.uf_rate()
 
+    portal_listings = fetch_portal_listings()
+    toctoc_listings = fetch_toctoc_listings()
+
+    Logger.info(
+      "Scraper fetched: portal=#{length(portal_listings)} toctoc=#{length(toctoc_listings)} (raw)"
+    )
+
     listings =
-      (fetch_portal_listings() ++ fetch_toctoc_listings())
+      (portal_listings ++ toctoc_listings)
       |> Enum.map(&convert_currency(&1, uf_rate))
       |> Enum.map(&RentBot.Normalize.enrich/1)
 
@@ -39,6 +51,8 @@ defmodule RentBot.Scraper do
       listings
       |> Enum.uniq_by(& &1.url)
       |> attach_images()
+
+    Logger.info("Scraper total after dedupe: #{length(listings)}")
 
     {:ok, listings}
   end
@@ -59,17 +73,36 @@ defmodule RentBot.Scraper do
 
   defp fetch_toctoc_listings do
     urls =
-      Enum.map(@toctoc_pages, fn
-        1 -> @toctoc_seed
-        page -> "#{@toctoc_seed}&pagina=#{page}"
-      end)
+      for seed <- @toctoc_seeds, page <- @toctoc_pages do
+        toctoc_page_url(seed, page)
+      end
 
     urls
-    |> Task.async_stream(&fetch_toctoc_page/1, timeout: 30_000, max_concurrency: 3)
+    |> Task.async_stream(fn url -> {url, fetch_toctoc_page(url)} end,
+      timeout: 30_000,
+      max_concurrency: 3
+    )
     |> Enum.flat_map(fn
-      {:ok, xs} when is_list(xs) -> xs
+      {:ok, {url, xs}} when is_list(xs) ->
+        Logger.info("TocToc: #{length(xs)} items from #{url}")
+        xs
+
       _ -> []
     end)
+  end
+
+  defp toctoc_page_url(seed_url, page) do
+    uri = URI.parse(seed_url)
+
+    query =
+      (uri.query || "")
+      |> URI.decode_query()
+      |> Map.put("pagina", Integer.to_string(page))
+      |> Map.put("paginaInterna", Integer.to_string(page))
+
+    uri
+    |> Map.put(:query, URI.encode_query(query))
+    |> URI.to_string()
   end
 
   defp fetch_list(url) do
@@ -83,29 +116,240 @@ defmodule RentBot.Scraper do
         end
 
       {:ok, %Req.Response{status: status}} ->
-        Logger.warn("Unexpected status #{status} when fetching #{url}")
+        Logger.warning("Unexpected status #{status} when fetching #{url}")
         []
 
       {:error, reason} ->
-        Logger.warn("Request error for #{url}: #{inspect(reason)}")
+        Logger.warning("Request error for #{url}: #{inspect(reason)}")
         []
     end
   end
 
   defp fetch_toctoc_page(url) do
-    case Req.get(url, receive_timeout: 20_000, headers: toctoc_headers(url)) do
-      {:ok, %Req.Response{status: 200, body: body}} ->
-        extract_toctoc_items(body)
+    # TocToc now uses an API endpoint instead of embedding data in HTML
+    # Extract parameters from the URL to build the API request
+    case extract_toctoc_params(url) do
+      {:ok, params} ->
+        fetch_toctoc_api(params)
 
-      {:ok, %Req.Response{status: status}} ->
-        Logger.warn("Unexpected status #{status} when fetching #{url}")
-        []
-
-      {:error, reason} ->
-        Logger.warn("Request error for #{url}: #{inspect(reason)}")
+      :error ->
+        Logger.warning("Could not extract parameters from TocToc URL: #{url}")
         []
     end
   end
+
+  defp extract_toctoc_params(url) do
+    uri = URI.parse(url)
+    query_params = URI.decode_query(uri.query || "")
+
+    path_parts = String.split(uri.path || "", "/", trim: true)
+    tipo_vista = Enum.at(path_parts, 1) || "mapa"
+    operacion_slug = Enum.at(path_parts, 2)
+    tipo_propiedad = Enum.at(path_parts, 3)
+    region = Enum.at(path_parts, 4) || "metropolitana"
+    comuna = Enum.at(path_parts, 5)
+
+    with true <- is_binary(comuna) do
+      pagina = parse_int(query_params["pagina"]) || 1
+
+      atributos =
+        case query_params["atributos"] do
+          "" -> []
+          nil -> []
+          values when is_binary(values) ->
+            values
+            |> String.split(",", trim: true)
+            |> Enum.map(&parse_int/1)
+            |> Enum.reject(&is_nil/1)
+          _ -> []
+        end
+
+      {:ok,
+       %{
+         page_url: url,
+         region: region,
+         comuna: comuna,
+         barrio: query_params["barrio"] || "",
+         poi: query_params["poi"] || "",
+         tipoVista: tipo_vista,
+         operacion: parse_operacion(operacion_slug),
+         idPoligono: parse_int(query_params["idPoligono"]) || 0,
+         moneda: parse_int(query_params["moneda"]) || 1,
+         precioDesde: parse_int(query_params["precioDesde"]) || 0,
+         precioHasta: parse_int(query_params["precioHasta"]) || 0,
+         dormitoriosDesde: parse_int(query_params["dormitoriosDesde"]) || 0,
+         dormitoriosHasta: parse_int(query_params["dormitoriosHasta"]) || 0,
+         banosDesde: parse_int(query_params["banosDesde"]) || 0,
+         banosHasta: parse_int(query_params["banosHasta"]) || 0,
+         tipoPropiedad: tipo_propiedad || "departamento",
+         estado: parse_int(query_params["estado"]) || 0,
+         disponibilidadEntrega: query_params["disponibilidadEntrega"] || "",
+         numeroDeDiasTocToc: parse_int(query_params["numeroDeDiasTocToc"]) || 0,
+         superficieDesdeUtil: parse_int(query_params["superficieDesdeUtil"]) || 0,
+         superficieHastaUtil: parse_int(query_params["superficieHastaUtil"]) || 0,
+         superficieDesdeConstruida: parse_int(query_params["superficieDesdeConstruida"]) || 0,
+         superficieHastaConstruida: parse_int(query_params["superficieHastaConstruida"]) || 0,
+         superficieDesdeTerraza: parse_int(query_params["superficieDesdeTerraza"]) || 0,
+         superficieHastaTerraza: parse_int(query_params["superficieHastaTerraza"]) || 0,
+         superficieDesdeTerreno: parse_int(query_params["superficieDesdeTerreno"]) || 0,
+         superficieHastaTerreno: parse_int(query_params["superficieHastaTerreno"]) || 0,
+         ordenarPor: parse_int(query_params["ordenarPor"]) || 0,
+         pagina: pagina,
+         paginaInterna: parse_int(query_params["paginaInterna"]) || pagina,
+         zoom: parse_int(query_params["zoom"]) || 0,
+         idZonaHomogenea: parse_int(query_params["idZonaHomogenea"]) || 0,
+         busqueda: (query_params["texto"] || query_params["busqueda"]) |> decode_search(comuna),
+         viewport: query_params["viewport"],
+         atributos: atributos,
+         publicador: parse_int(query_params["publicador"]) || 0,
+         temporalidad: parse_int(query_params["temporalidad"]) || 0,
+         limite: parse_int(query_params["limite"]) || 510,
+         cargaBanner: true,
+         primeraCarga: pagina == 1,
+         santander: parse_boolean(query_params["santander"]) || false
+       }}
+    else
+      _ -> :error
+    end
+  end
+
+  defp fetch_toctoc_api(params) do
+    url = "https://www.toctoc.com/api/mapa/GetProps"
+
+    base_headers = [
+      {"accept", "application/json"},
+      {"content-type", "application/json"},
+      {"user-agent",
+       "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/141.0.0.0 Safari/537.36"},
+      {"origin", "https://www.toctoc.com"},
+      {"referer", Map.get(params, :page_url) || "https://www.toctoc.com/"}
+    ]
+
+    headers =
+      base_headers
+      |> maybe_put_header("x-access-token", System.get_env("TOCTOC_ACCESS_TOKEN"))
+      |> maybe_put_header("cookie", toctoc_cookie())
+
+    body = Map.drop(params, [:page_url])
+
+    case Req.post(url, json: body, headers: headers, receive_timeout: 20_000) do
+      {:ok, %Req.Response{status: 200, body: body}} when is_map(body) ->
+        extract_toctoc_api_items(body, params.comuna)
+
+      {:ok, %Req.Response{status: 200, body: body}} when is_binary(body) ->
+        case Jason.decode(body) do
+          {:ok, data} -> extract_toctoc_api_items(data, params.comuna)
+          _ -> []
+        end
+
+      {:ok, %Req.Response{status: 403}} ->
+        Logger.warning(
+          "TocToc API returned 403 Forbidden for comuna #{params.comuna}. Configure TOCTOC_ACCESS_TOKEN and TOCTOC_COOKIE."
+        )
+
+        []
+
+      {:ok, %Req.Response{status: status}} ->
+        Logger.warning("TocToc API returned status #{status} for comuna #{params.comuna}")
+        []
+
+      {:error, reason} ->
+        Logger.warning("TocToc API request error: #{inspect(reason)}")
+        []
+    end
+  end
+
+  defp extract_toctoc_api_items(data, comuna) when is_map(data) do
+    # The API returns data in the "resultados" key (Spanish for "results")
+    listings =
+      data["props"] || data["Props"] || data["resultados"] || data["propiedades"] ||
+        data["properties"] || data["items"] || data["results"] || data["Propiedades"] || []
+
+    items =
+      listings
+      |> List.wrap()
+      |> Enum.map(&build_toctoc_api_item(&1, comuna))
+      |> Enum.reject(&is_nil/1)
+
+    Logger.info("TocToc API: extracted #{length(items)} items for #{comuna}")
+    items
+  end
+
+  defp extract_toctoc_api_items(_, _), do: []
+
+  defp build_toctoc_api_item(prop, fallback_comuna) when is_map(prop) do
+    # Extract ID and build URL
+    id = prop["id"] || prop["Id"] || prop["idPropiedad"]
+    url = if id, do: "https://www.toctoc.com/propiedad/#{id}", else: nil
+
+    # Extract basic info
+    title = prop["titulo"] || prop["title"] || prop["Titulo"]
+    precio = prop["precio"] || prop["Precio"] || prop["price"]
+    moneda = prop["moneda"] || prop["Moneda"] || prop["currency"]
+
+    # Extract property details
+    dormitorios = prop["dormitorios"] || prop["Dormitorios"] || prop["bedrooms"]
+    banos = prop["banos"] || prop["Banos"] || prop["bathrooms"]
+    superficie = prop["superficie"] || prop["Superficie"] || prop["area"]
+
+    # Extract location
+    comuna = prop["comuna"] || prop["Comuna"] || fallback_comuna
+    direccion = prop["direccion"] || prop["Direccion"] || prop["address"]
+
+    # Extract image
+    imagen = prop["imagen"] || prop["Imagen"] || prop["image"] || prop["foto"]
+
+    with url when is_binary(url) <- url,
+         title when is_binary(title) <- title do
+      item = %{
+        source: "toctoc",
+        url: url,
+        title: title,
+        price_clp: parse_int(precio),
+        currency: normalize_currency_code(moneda),
+        area_m2: parse_float(superficie),
+        bedrooms: parse_int(dormitorios),
+        bathrooms: parse_int(banos),
+        address: direccion,
+        comuna: comuna,
+        image_url: normalize_url(imagen),
+        published_at: nil
+      }
+
+      if validate_toctoc_item(item) do
+        item
+      else
+        Logger.debug("TocToc API item rejected (insufficient data): #{url}")
+        nil
+      end
+    else
+      _ -> nil
+    end
+  end
+
+  defp build_toctoc_api_item(_, _), do: nil
+
+  defp normalize_currency_code(code) when is_binary(code) do
+    case String.upcase(code) do
+      "CLP" -> "CLP"
+      "UF" -> "UF"
+      "CLF" -> "UF"
+      "USD" -> "USD"
+      "$" -> "CLP"
+      _ -> code
+    end
+  end
+
+  defp normalize_currency_code(code) when is_integer(code) do
+    case code do
+      1 -> "UF"
+      2 -> "CLP"
+      3 -> "USD"
+      _ -> nil
+    end
+  end
+
+  defp normalize_currency_code(_), do: nil
 
   defp extract_items(html) do
     with {:ok, doc} <- Floki.parse_document(html) do
@@ -209,10 +453,42 @@ defmodule RentBot.Scraper do
 
   defp extract_toctoc_items(html) do
     with {:ok, doc} <- Floki.parse_document(html) do
-      extract_toctoc_next(doc) ++ extract_jsonld(doc, "toctoc")
+      next_items = extract_toctoc_next(doc)
+      jsonld_items = extract_jsonld(doc, "toctoc")
+      attr_items = extract_toctoc_data_attrs(doc)
+
+      Logger.debug(
+        "TocToc extraction: next=#{length(next_items)} jsonld=#{length(jsonld_items)} attrs=#{length(attr_items)}"
+      )
+
+      next_items ++ jsonld_items ++ attr_items
     else
       _ -> []
     end
+  end
+
+  defp extract_toctoc_data_attrs(doc) do
+    links_by_id = toctoc_links_by_id(doc)
+
+    doc
+    |> Floki.find("img.imgslide[data-id-propiedad]")
+    |> Enum.map(&build_toctoc_attr_item(&1, links_by_id))
+    |> Enum.reject(&is_nil/1)
+  end
+
+  defp toctoc_links_by_id(doc) do
+    doc
+    |> Floki.find("a")
+    |> Enum.reduce(%{}, fn node, acc ->
+      href = attr(node, "href")
+      id = attr(node, "data-id-propiedad") || extract_id_from_href(href)
+
+      if is_binary(id) and is_binary(href) do
+        Map.put_new(acc, id, normalize_url(href, "www.toctoc.com"))
+      else
+        acc
+      end
+    end)
   end
 
   defp extract_toctoc_next(doc) do
@@ -246,6 +522,69 @@ defmodule RentBot.Scraper do
 
   defp decode_toctoc_next(_), do: []
 
+  defp build_toctoc_attr_item({_tag, attrs, _} = node, links_by_id) do
+    attr_map = Map.new(attrs)
+    id = attr_map["data-id-propiedad"]
+
+    url =
+      Map.get(links_by_id, id) ||
+        build_toctoc_url(id)
+
+    title = attr(node, "alt") || attr_map["data-termino-busqueda"] || attr_map["data-lista"]
+
+    bedrooms =
+      pick_first_number(attr_map, ["data-dormitorios1", "data-dormitorios2"], &parse_int/1)
+
+    bathrooms = pick_first_number(attr_map, ["data-banos1", "data-banos2"], &parse_int/1)
+
+    area_m2 =
+      pick_first_number(attr_map, ["data-superficie2", "data-superficie1"], &parse_float/1)
+
+    price_value =
+      first_present_attr(attr_map, [
+        "data-precio",
+        "data-precio-valor",
+        "data-precio-clp",
+        "data-precio-uf"
+      ])
+
+    currency =
+      attr_map["data-precio-moneda"]
+      |> currency_from_symbol()
+
+    image_url = attr(node, "src")
+    comuna = attr_map["data-comuna"]
+
+    with url when is_binary(url) <- url,
+         title when is_binary(title) <- title do
+      item = %{
+        source: "toctoc",
+        url: url,
+        title: title,
+        price_clp: parse_int(price_value),
+        currency: currency,
+        area_m2: area_m2,
+        bedrooms: bedrooms,
+        bathrooms: bathrooms,
+        address: nil,
+        comuna: comuna,
+        image_url: normalize_url(image_url)
+      }
+
+      # Validate minimum data quality
+      if validate_toctoc_item(item) do
+        item
+      else
+        Logger.debug("TocToc item rejected (insufficient data): #{url}")
+        nil
+      end
+    else
+      _ -> nil
+    end
+  end
+
+  defp build_toctoc_attr_item(_, _), do: nil
+
   defp find_toctoc_blocks(value) when is_list(value) do
     candidate =
       case value do
@@ -270,6 +609,30 @@ defmodule RentBot.Scraper do
   end
 
   defp find_toctoc_blocks(_), do: []
+
+  defp currency_from_symbol(symbol) do
+    case symbol do
+      "$" -> "CLP"
+      "UF" -> "UF"
+      "US$" -> "USD"
+      _ -> symbol
+    end
+  end
+
+  defp pick_first_number(map, keys, parser) do
+    map
+    |> first_present_attr(keys)
+    |> parser.()
+  end
+
+  defp first_present_attr(map, keys) do
+    Enum.find_value(keys, fn key ->
+      case map do
+        %{} -> Map.get(map, key)
+        _ -> nil
+      end
+    end)
+  end
 
   defp build_toctoc_item(%{} = listing) do
     url = first_present(listing, ["url", "permalink", "Url", "Permalink", "Link", "link"])
@@ -315,7 +678,7 @@ defmodule RentBot.Scraper do
 
     with url when is_binary(url) <- normalize_url(url, "www.toctoc.com"),
          title when is_binary(title) <- title do
-      %{
+      item = %{
         source: "toctoc",
         url: url,
         title: title,
@@ -329,12 +692,33 @@ defmodule RentBot.Scraper do
         image_url: normalize_url(image_url),
         published_at: parse_date(published_at)
       }
+
+      # Validate minimum data quality
+      if validate_toctoc_item(item) do
+        item
+      else
+        Logger.debug("TocToc item rejected (insufficient data): #{url}")
+        nil
+      end
     else
       _ -> nil
     end
   end
 
   defp build_toctoc_item(_), do: nil
+
+  # Validates that a TocToc item has minimum required data quality
+  defp validate_toctoc_item(%{url: url, title: title} = item)
+       when is_binary(url) and is_binary(title) do
+    # Item must have at least one of: price, area, or bedrooms
+    has_price = is_number(item[:price_clp]) and item[:price_clp] > 0
+    has_area = is_number(item[:area_m2]) and item[:area_m2] > 0
+    has_bedrooms = is_number(item[:bedrooms]) and item[:bedrooms] > 0
+
+    has_price or has_area or has_bedrooms
+  end
+
+  defp validate_toctoc_item(_), do: false
 
   defp first_present(map, keys) do
     keys
@@ -345,6 +729,27 @@ defmodule RentBot.Scraper do
       end
     end)
   end
+
+  defp attr(node, name) do
+    node
+    |> Floki.attribute(name)
+    |> List.first()
+  end
+
+  defp extract_id_from_href(href) when is_binary(href) do
+    case Regex.run(~r/(\d{6,})/, href) do
+      [_, id] -> id
+      _ -> nil
+    end
+  end
+
+  defp extract_id_from_href(_), do: nil
+
+  defp build_toctoc_url(id) when is_binary(id) do
+    "https://www.toctoc.com/propiedad/" <> id
+  end
+
+  defp build_toctoc_url(_), do: nil
 
   defp detect_currency_from_price(value) when is_binary(value) do
     cond do
@@ -411,6 +816,45 @@ defmodule RentBot.Scraper do
       {n, _} -> n
       _ -> nil
     end
+  end
+
+  defp parse_operacion("venta"), do: 1
+  defp parse_operacion("arriendo"), do: 2
+  defp parse_operacion(_), do: 0
+
+  defp parse_boolean(v) when v in [true, false], do: v
+
+  defp parse_boolean(v) when is_binary(v) do
+    case String.downcase(v) do
+      "true" -> true
+      "1" -> true
+      "false" -> false
+      "0" -> false
+      _ -> nil
+    end
+  end
+
+  defp parse_boolean(_), do: nil
+
+  defp decode_search(nil, comuna), do: humanize_slug(comuna)
+  defp decode_search("", comuna), do: humanize_slug(comuna)
+
+  defp decode_search(text, _comuna) when is_binary(text) do
+    text
+    |> URI.decode_www_form()
+    |> String.trim()
+  end
+
+  defp humanize_slug(nil), do: nil
+
+  defp humanize_slug(slug) do
+    slug
+    |> URI.decode_www_form()
+    |> String.replace("-", " ")
+    |> String.trim()
+    |> String.split(" ", trim: true)
+    |> Enum.map(&String.capitalize/1)
+    |> Enum.join(" ")
   end
 
   defp parse_float(nil), do: nil
@@ -673,6 +1117,13 @@ defmodule RentBot.Scraper do
   defp normalize_currency(currency) when is_binary(currency), do: String.upcase(currency)
   defp normalize_currency(_), do: nil
 
+  defp maybe_put_header(headers, _key, value) when value in [nil, ""], do: headers
+  defp maybe_put_header(headers, key, value), do: [{key, value} | headers]
+
+  defp toctoc_cookie do
+    System.get_env("TOCTOC_COOKIE")
+  end
+
   defp req_headers(url \\ nil) do
     headers =
       case runtime_cookie() do
@@ -709,11 +1160,11 @@ defmodule RentBot.Scraper do
 
   defp maybe_log_cookie_hint(url) do
     if runtime_cookie() in [nil, ""] do
-      Logger.warn(
+      Logger.warning(
         "Blocked by account verification when fetching #{url} (no session cookie configured)"
       )
     else
-      Logger.warn(
+      Logger.warning(
         "Blocked by account verification when fetching #{url} even with provided cookie"
       )
     end
